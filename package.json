@@ -1,0 +1,21 @@
+{
+  "name": "midirec",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "midi": "^0.9.4",
+    "nanotimer": "^0.3.14",
+    "ramda": "^0.21.0",
+    "rx": "^4.1.0",
+    "rx-node": "^1.0.2"
+  },
+  "devDependencies": {
+    "eslint": "^2.9.0"
+  }
+}
