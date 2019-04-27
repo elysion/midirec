@@ -1,15 +1,18 @@
-'use strict'; // eslint-disable-line semi
+'use strict' // eslint-disable-line semi
 const Rx = require('rx')
 const midi = require('midi')
 const R = require('ramda')
 const fs = require('fs')
 const RxNode = require('rx-node')
 const path = require('path')
+const readline = require('readline')
 
 const Console = console
 const ClockTick = [248]
 const ClockStop = [252]
 const ClockStart = [250]
+
+const initializedMessage = [180, 48, 125]
 
 // TODO: open an virtual input port and start recording on clock start?
 
@@ -46,7 +49,6 @@ const main = () => {
   const messageDeviceName = process.argv[2]
   const scriptName = path.basename(__filename)
 
-  Console.log('Starting recording to', filename)
   const fileStream = fs.createWriteStream(filename)
   fileStream.write('phrase, bar, beat, tick, byte1, byte2, byte3\n')
   const stdin = RxNode.fromStream(process.stdin, 'end')
@@ -54,92 +56,116 @@ const main = () => {
 
   const isIn = R.flip(R.contains)
   const messageInput = new midi.input()
-    // input.openVirtualPort('Test Input')
+  messageInput.ignoreTypes(false, false, false)
   messageInput.openPort(getPortNumber(messageDeviceName))
-  let messageInputSubject = new Rx.Subject()
+  let midiInputSubject = new Rx.Subject()
   messageInput.on('message', (deltaTime, message) => {
-    messageInputSubject.onNext([deltaTime, message])
+    midiInputSubject.onNext([deltaTime, message])
   })
-  const messages = messageInputSubject.map(R.nth(1)).filter(R.complement(isIn([ClockTick, ClockStart])))
+  const midiInput = midiInputSubject.map(R.nth(1))
+  const [clock, messages] = midiInput.partition(isIn([ClockTick, ClockStart, ClockStop]))
 
-  const clockInput = new midi.input()
-    // input.openVirtualPort('Test Input')
-  clockInput.openVirtualPort(scriptName)
-  clockInput.ignoreTypes(false, false, false)
-  let clockInputSubject = new Rx.Subject()
-  clockInput.on('message', (deltaTime, message) => {
-    clockInputSubject.onNext([deltaTime, message])
+  messages.subscribe(message => {
+    readline.cursorTo(process.stdout, 0, 7)
+    process.stdout.clearLine()
+    process.stdout.write(`Message ${message}`)
   })
-  const clock = clockInputSubject.map(R.nth(1)).filter(isIn([ClockTick, ClockStart, ClockStop]))
 
-  const States = Object.freeze({stopped: 0, armed: 1, recording: 2})
-  const isRecording = clock.filter(isIn([ClockStart, ClockStop])).distinctUntilChanged().merge(messages)
+  Console.clear()
+  Console.log('Recording to', filename)
+
+  const States = Object.freeze({ stopped: 0, armed: 1, recording: 2 })
+  const recordingState = clock
+    .filter(isIn([ClockStart, ClockStop]))
+    .distinctUntilChanged()
+    .merge(messages)
     .scan((state, latest) => {
-      Console.log({state, latest})
+      //      Console.log({state, latest})
       switch (state) {
-      case (States.stopped):
-        return R.equals(latest, ClockStart) ? States.armed : States.stopped
-      case (States.armed):
-        return !R.contains(latest, [ClockStart, ClockStop]) ? States.recording : States.armed
-      case (States.recording):
-        return R.equals(latest, ClockStop) ? States.stopped : States.recording
-      default:
-        throw Error('Weird state')
+        case States.stopped:
+          return R.equals(latest, ClockStart) ? States.armed : States.stopped
+        case States.armed:
+          return !R.contains(latest, [ClockStart, ClockStop]) ? States.recording : States.armed
+        case States.recording:
+          return R.equals(latest, ClockStop) ? States.stopped : States.recording
+        default:
+          throw Error('Weird state')
       }
-    }, States.armed)
-      .map(R.equals(States.recording))
+    }, States.stopped)
 
-  isRecording.subscribe(r => Console.log('isRecording', r))
+  const isRecording = recordingState.map(R.equals(States.recording))
 
-  Console.log('Waiting for first message')
-  clock.first().subscribe(() => Console.log('Received first message. Initiate recording.'))
+  recordingState.distinctUntilChanged().subscribe(state => {
+    readline.cursorTo(process.stdout, 0, 1)
+    process.stdout.clearLine()
+    process.stdout.write(state === States.stopped ? 'Stopped' : state === States.armed ? 'Waiting' : 'Recording')
+  })
 
   const initializedMessageOutput = new midi.output()
   initializedMessageOutput.openVirtualPort(`${scriptName} initialized`)
+  const startedRecording = clock
+    .merge(isRecording)
+    .scan((previous, current) => current === true && !previous)
+    .distinctUntilChanged()
 
   const position = clock
-    .combineLatest(isRecording)
-    .filter(([message, recording]) => recording ? true : R.equals(message, ClockStart))
-    .map(R.head)
-    .scan(([phrase, bar, beat, tick], message) => {
-        //Console.log('tick')
-      if (R.equals(message, ClockStart)) {
-        return [0, 0, 0, 0]
-      } else if (R.equals(message, ClockTick)) {
-        const tickOverflow = tick === 23 ? 1 : 0
-        tick = (tick + 1) % 24
-        const beatOverflow = beat === 3 && tickOverflow ? 1 : 0
-        beat = (beat + tickOverflow) % 4
-        const barOverflow = bar === 3 && beatOverflow ? 1 : 0
-        bar = (bar + beatOverflow) % 4
-        phrase += barOverflow
-        return [phrase, bar, beat, tick]
-      }
-    }, [0, 0, 0, 0])
+    .combineLatest(startedRecording)
+    .pausable(isRecording)
+    .scan(
+      ([phrase, bar, beat, tick], [message, startedRecording]) => {
+        if (startedRecording || isIn([ClockStart, ClockStop], message)) {
+          return [0, 0, 0, 0]
+        } else if (R.equals(message, ClockTick)) {
+          const tickOverflow = tick === 23 ? 1 : 0
+          tick = (tick + 1) % 24
+          const beatOverflow = beat === 3 && tickOverflow ? 1 : 0
+          beat = (beat + tickOverflow) % 4
+          const barOverflow = bar === 3 && beatOverflow ? 1 : 0
+          bar = (bar + beatOverflow) % 4
+          phrase += barOverflow
+          return [phrase, bar, beat, tick]
+        } else {
+          throw new Error(`Weird message received ${message.toString()}`)
+        }
+      },
+      [0, 0, 0, 0]
+    )
+    .startWith([0, 0, 0, 0])
 
-  messages.withLatestFrom(position, Array)
+  position.subscribe(pos => {
+    readline.cursorTo(process.stdout, 0, 8)
+    process.stdout.clearLine()
+    process.stdout.write(`Position ${pos}`)
+  })
+
+  const recordedMessages = messages
+    .withLatestFrom(position, Array)
     .map(R.reverse)
-    .tap(message => Console.log(message))
-    .map(R.flatten)
-    .map(R.join(','))
-    .subscribe(serializedData => fileStream.write(serializedData + '\n'))
-
-  initializedMessageOutput.sendMessage([180, 48, 125])
-
-  RxNode.fromStream(process.stdin, 'end')
-    .subscribe((input) => {
-      Console.log('input', input)
-      initializedMessageOutput.sendMessage([180, 48, 125])
+    .tap(message => {
+      return
+      readline.cursorTo(process.stdout, 0, 2)
+      process.stdout.clearLine()
+      process.stdout.write(`Recorded ${message}`)
     })
+    .map(R.flatten)
+
+  recordedMessages.map(R.join(',')).subscribe(serializedData => fileStream.write(serializedData + '\n'))
+
+  initializedMessageOutput.sendMessage(initializedMessage)
+
+  RxNode.fromStream(process.stdin, 'end').subscribe(input => {
+    // TODO: what is this for? This is executed when enter is pressed.
+    initializedMessageOutput.sendMessage([180, 48, 125])
+  })
 
   const closePorts = () => {
     Console.log('Closing ports')
-    clockInput.closePort()
     messageInput.closePort()
     initializedMessageOutput.closePort()
+    fileStream.close()
+    process.exit(0)
   }
 
-  process.on('exit', closePorts)
   process.on('SIGINT', closePorts)
   process.on('uncaughtException', err => {
     Console.error(err)

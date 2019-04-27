@@ -1,4 +1,4 @@
-module.exports = {
+/*module.exports = {
     "env": {
         "es6": true,
         "node": true
@@ -25,4 +25,25 @@ module.exports = {
             "never"
         ]
     }
-};
+};*/
+
+module.exports = {
+  eslintConfig:
+    {
+      parserOptions: {
+        ecmaVersion: 7
+      }
+      ,
+      rules: {
+        semi: ["error", "never"]
+      }
+    }
+  ,
+  prettierOptions: {
+    bracketSpacing: true
+  }
+  ,
+  fallbackPrettierOptions: {
+    singleQuote: false
+  }
+}
