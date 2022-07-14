@@ -9,7 +9,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "midi": "^0.9.4",
+    "midi": "^2.0.0",
     "nanotimer": "^0.3.14",
     "ramda": "^0.21.0",
     "rx": "^4.1.0",
